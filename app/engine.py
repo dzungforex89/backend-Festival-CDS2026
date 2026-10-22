@@ -35,6 +35,24 @@ def money(v):
     return Decimal(str(v)).quantize(Decimal(".01"), rounding=ROUND_HALF_UP)
 
 
+def event_within_contract(e, c):
+    event_date = stamp(e["event_timestamp"]).date()
+    return datetime.fromisoformat(c["signing_date"]).date() <= event_date <= datetime.fromisoformat(
+        c["end_date"]
+    ).date()
+
+
+def required_sequence_is_valid(evidence, required):
+    positions = {
+        event_type: stamp(next(e for e in evidence if e["event_type"] == event_type)["event_timestamp"])
+        for event_type in required
+    }
+    return all(
+        positions[left] <= positions[right]
+        for left, right in zip(required, required[1:])
+    )
+
+
 def authorized(e, c, m, parties):
     p = parties.get(e.get("actor_party_id"), {})
     t = e.get("event_type")
@@ -115,6 +133,8 @@ def evaluate(c, m, events, parties, rules, as_of=None):
     )
     trace = []
     try:
+        if m.get("contract_id") != c.get("contract_id"):
+            raise ValueError("Milestone does not belong to contract")
         required = parts(m["required_event_types"])
         planned = money(m["planned_payment_vnd_mn"])
         if not required or m.get("condition_logic") != "ALL" or planned < 0:
@@ -163,10 +183,16 @@ def evaluate(c, m, events, parties, rules, as_of=None):
             (duplicate if match else unique).append(e)
             if match:
                 aliases[e["event_id"]] = match["event_id"]
+        invalid_timing = [
+            e
+            for e in unique
+            if e["event_type"] in required and not event_within_contract(e, c)
+        ]
         valid = [
             e
             for e in unique
-            if authorized(e, c, m, parties)
+            if e not in invalid_timing
+            and authorized(e, c, m, parties)
             and e["event_status"]
             == {
                 "APPROVAL": "APPROVED",
@@ -193,7 +219,11 @@ def evaluate(c, m, events, parties, rules, as_of=None):
         unauthorized = [
             e
             for e in relevant
-            if e["event_type"] in required and not authorized(e, c, m, parties)
+            if e["event_type"] in required
+            and (
+                not authorized(e, c, m, parties)
+                or e in invalid_timing
+            )
         ]
         evidence = [
             next(e for e in valid if e["event_type"] == t)
@@ -203,6 +233,12 @@ def evaluate(c, m, events, parties, rules, as_of=None):
         missing = [
             t for t in required if not any(e["event_type"] == t for e in evidence)
         ]
+        invalid_sequence = len(evidence) == len(required) and not required_sequence_is_valid(
+            evidence, required
+        )
+        if invalid_sequence:
+            missing = list(required)
+            evidence = []
         approvals = {}
         for e in valid:
             if e["event_type"] == "APPROVAL":
@@ -348,6 +384,10 @@ def evaluate(c, m, events, parties, rules, as_of=None):
                 "duplicate_event_ids": [e["event_id"] for e in duplicate],
                 "valid_approval_count": len(approvals),
                 "days_late_after_grace": late,
+                "invalid_timing_event_ids": [
+                    e["event_id"] for e in invalid_timing
+                ],
+                "invalid_sequence": invalid_sequence,
             },
         )
     except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
