@@ -35,11 +35,9 @@ def money(v):
     return Decimal(str(v)).quantize(Decimal(".01"), rounding=ROUND_HALF_UP)
 
 
-def event_within_contract(e, c):
+def event_not_before_contract_signing(e, c):
     event_date = stamp(e["event_timestamp"]).date()
-    return datetime.fromisoformat(c["signing_date"]).date() <= event_date <= datetime.fromisoformat(
-        c["end_date"]
-    ).date()
+    return event_date >= datetime.fromisoformat(c["signing_date"]).date()
 
 
 def required_sequence_is_valid(evidence, required):
@@ -186,7 +184,8 @@ def evaluate(c, m, events, parties, rules, as_of=None):
         invalid_timing = [
             e
             for e in unique
-            if e["event_type"] in required and not event_within_contract(e, c)
+            if e["event_type"] in required
+            and not event_not_before_contract_signing(e, c)
         ]
         valid = [
             e

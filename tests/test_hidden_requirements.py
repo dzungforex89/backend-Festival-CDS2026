@@ -61,30 +61,38 @@ def test_contract_milestone_mismatch_fails_safe():
     assert outcome["payable_amount_vnd_mn"] == "0.00"
 
 
-@pytest.mark.parametrize(
-    "offset",
-    [
-        timedelta(seconds=-1),
-        timedelta(days=1),
-    ],
-    ids=["before-contract-signing", "after-contract-end"],
-)
-def test_required_event_outside_contract_dates_holds(offset):
+def test_required_event_before_contract_signing_holds():
     contract = deepcopy(C["CT0001"])
     milestone = deepcopy(M["MS0003"])
     events = deepcopy(E)
     event = next(e for e in events if e["milestone_id"] == "MS0003")
     start = datetime.fromisoformat(contract["signing_date"])
-    end = datetime.fromisoformat(contract["end_date"])
-    event["event_timestamp"] = (
-        (start + offset if offset.total_seconds() < 0 else end + offset)
-        .isoformat()
-    )
+    event["event_timestamp"] = (start - timedelta(seconds=1)).isoformat()
 
     outcome = result(contract, milestone, events)
 
     assert outcome["predicted_decision"] == "HOLD"
     assert event["event_id"] in outcome["diagnostics"]["invalid_timing_event_ids"]
+
+
+@pytest.mark.parametrize("milestone_id", ["MS0138", "MS0299", "MS0326"])
+def test_late_completion_after_contract_end_can_be_penalized(milestone_id):
+    contract = deepcopy(C[next(m["contract_id"] for m in M.values() if m["milestone_id"] == milestone_id)])
+    milestone = deepcopy(M[milestone_id])
+
+    late_event = next(
+        e for e in E if e["milestone_id"] == milestone_id and e["event_type"] == "ACCEPTANCE"
+    )
+    assert datetime.fromisoformat(late_event["event_timestamp"]).date() > datetime.fromisoformat(
+        contract["end_date"]
+    ).date()
+
+    outcome = result(contract, milestone)
+
+    assert outcome["predicted_decision"] == "PENALTY"
+    assert outcome["reason_code"] == "LATE_COMPLETION"
+    assert Decimal(outcome["penalty_amount_vnd_mn"]) > 0
+    assert late_event["event_id"] not in outcome["diagnostics"]["invalid_timing_event_ids"]
 
 
 def test_required_events_in_wrong_order_hold():
